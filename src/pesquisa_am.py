@@ -1,6 +1,36 @@
+from dataclasses import dataclass
+from typing import List
 import pandas as pd
+from collections import defaultdict
+
+@dataclass
+class Registro:
+    categoria: str      # e.g. 'Estim1_pref', 'Espontanea', etc.
+    nome: str           # value from the first column (label, varies per DataFrame)
+    quantidade: int
+    percentual: float
+    grupo: str
+    municipio: str
+    
+def map(dados: dict) -> List[Registro]:
+    registros = []
+    for categoria, df in dados.items():
+        if not isinstance(df, pd.DataFrame):
+            continue
+        nome_col = df.columns[0]  # the first column (e.g., 'Estim1_pref', 'Espontanea', etc.)
+        for _, row in df.iterrows():
+            registros.append(Registro(
+                categoria=categoria,
+                nome=row[nome_col],
+                quantidade=row["Quantidade"],
+                percentual=row["Percentual"],
+                grupo=row["Grupo"],
+                municipio=row["Municipio"]
+            ))
+    return registros
 
 # Carregar o arquivo Excel
+pesos_municipios = pd.read_excel('Pesosmunicipios.xlsx')
 pesquisa_geral = pd.read_excel('PesquisaAmazonas.xlsx')
 
 # === Corrigir espaços nos nomes das colunas ===
@@ -22,14 +52,8 @@ colunas_para_analisar = [
 # === Filtros ===
 manaus = pesquisa_geral[pesquisa_geral['Municipio'].str.lower() == 'manaus']
 interior = pesquisa_geral[pesquisa_geral['Municipio'].str.lower() != 'manaus']
-
 municipios = interior['Municipio'].unique()
-print(municipios) 
-print(len(municipios))
 
-
- 
-print(municipios.len)
 # === AQUI COMEÇA A PARADA ===
 
 def calcular_percentual(planilha, nome_grupo):
@@ -44,25 +68,45 @@ def calcular_percentual(planilha, nome_grupo):
     return tabelas
 
 def calcular_percentual_interior(planilha, nome_grupo):
+    registros: Registro
+    soma_por_nome = defaultdict(float)
     tabelas = {}
+    for coluna in colunas_para_analisar: 
+        linha = []   
+        print(tabelas)
+        for municipio in municipios:
+            planilha2 = pesquisa_geral[pesquisa_geral['Municipio'].str.lower() == municipio.strip().lower()]
+            contagem = planilha2[coluna].value_counts(dropna=True).reset_index()
+            contagem.columns = [coluna, 'Quantidade']            
+            filtro = pesos_municipios["Município"].str.strip().str.lower() == municipio.strip().lower()
+            resultado = pesos_municipios.loc[filtro, "Pesosinterior"]
+            contagem['Percentual'] = (contagem['Quantidade'] / contagem['Quantidade'].sum()) * resultado.values[0]            
+            contagem['Grupo'] = nome_grupo
+            contagem['Municipio'] = municipio
+            tabelas[coluna] = contagem
+            print(tabelas)
+            linha = map(tabelas)
+            for r in linha:
+                soma_por_nome[r.nome] += r.percentual
+        
+        percentual_por_nome = pd.DataFrame(list(soma_por_nome.items()), columns=[coluna, 'Percentual'])
 
-    for coluna in colunas_para_analisar:
-        contagem = planilha[coluna].value_counts(dropna=True).reset_index()
-        contagem.columns = [coluna, 'Quantidade']
-        print(contagem)
-        print(contagem['Quantidade'].sum())
-        contagem['Percentual'] = contagem['Quantidade'] / contagem['Quantidade'].sum()
-        contagem['Grupo'] = nome_grupo
-        tabelas[coluna] = contagem
+        # Mapeia os valores atualizados de percentual por nome
+        mapa_percentual = dict(zip(percentual_por_nome[coluna], percentual_por_nome["Percentual"]))
+        df_original = tabelas[coluna]
+        df_original["Percentual"] = df_original[coluna].map(mapa_percentual)
+
+        tabelas[coluna] = df_original
     return tabelas
+        
 
+# === Aplicando Merge para criar planilha final ===
 tabelas_interior = calcular_percentual_interior(interior, 'Interior')
 tabelas_manaus = calcular_percentual(manaus, 'Manaus')
 
 tabelas_amazonas = {}
 for coluna in colunas_para_analisar:
     interior_df = tabelas_interior[coluna]
-    print(interior_df)
     manaus_df = tabelas_manaus[coluna]
     
     combinado = pd.merge(
@@ -81,7 +125,6 @@ for coluna in colunas_para_analisar:
 # === Salvar no Excel (uma aba para cada variável) ===
 print(tabelas_amazonas.items())
 with pd.ExcelWriter('Resultado_Percentuais_Amazonas.xlsx') as writer:
-    for coluna, tabela in tabelas_amazonas.items():
-        
+    for coluna, tabela in tabelas_amazonas.items():        
         tabela.to_excel(writer, sheet_name=coluna[:30], index=False)
 print('=)')
